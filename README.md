@@ -10,7 +10,7 @@ Everything here was run in the Airwallex sandbox with Python. No real money, no 
 
 1. **A failed renewal can be traced with IDs alone.** Invoice, billing transaction, Payment Intent, payment attempt. No manual matching. I checked this on one paid and one failed charge.
 2. **The layers don't move together.** After the failed charge the attempt was `FAILED` and the subscription was `UNPAID`, but the billing transaction still said `CREATED`. Anyone building on this should read the payment layer's status, not only the billing one.
-3. **Retry behaviour on a daily plan:** Test still running; result added once the retry window has passed.
+3. **Retry behaviour on a daily plan:** One retry fired about two hours after the first attempt and failed again. The subscription then went from `UNPAID` to `CANCELLED`. This matches the dunning docs for a daily cycle (one retry, two attempts in total). I have not confirmed whether `CANCELLED` is the default or a setting.
 4. **Not tested:** webhook delivery, retry schedules for longer cycles, and any approval-rate or recovery-rate uplift. A sandbox can't show those.
 
 ## Problem
@@ -73,7 +73,14 @@ The paid invoice looked like this: invoice PAID, transaction SUCCEEDED, Payment 
 
 ## Retry and end state (daily plan)
 
-Test still running; result added once the retry window has passed.
+Times are UTC. I poll every 5 minutes, so timing is accurate to about 5 minutes.
+
+- **First attempt** `att_sgpvgxw68ho9qws28ui_wrt094`: received at 08:15, failed by 08:21. Subscription went `UNPAID`.
+- **Second attempt** `att_sgpvl8q88ho9u7vn1om_wrt094`: first seen at my 10:17 poll, about two hours after the first. It failed with the same generic `authorization_failed`.
+- **End state:** at that same poll the subscription went `CANCELLED`.
+- **Still unpaid:** the invoice stayed `FINALIZED` and `UNPAID`, the billing transaction stayed `CREATED`, and the Payment Intent stayed `REQUIRES_PAYMENT_METHOD`.
+
+The raw log is in `evidence/retry_log.jsonl`. It records changes only, so nothing was logged between 08:21 and 10:17.
 
 ## My view
 
