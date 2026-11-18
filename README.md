@@ -1,92 +1,136 @@
-# Lark Open Platform Lab
+# airwallex-billing-lifecycle
 
-A small hands-on lab to learn how Lark's Open Platform works end to end: authenticate, notify a group, create, read and update Base records, and receive events pushed by Lark.
+A hands-on test of one question: when a subscription renewal fails, how visible and traceable is it across Airwallex Billing and Payments?
 
-**Scenario:** a store reports an issue, it is recorded in a Base, a group is notified, a manager approves, and the record is updated. It is an event-driven, human-in-the-loop business workflow, not a payments or settlement flow.
+Everything here was run in the Airwallex sandbox with Python. No real money, no real customers.
 
-> Learning project, not production software. Every step marked done was run by me against my own Lark workspace. Built with help from Claude (an AI assistant); I ran, debugged and documented each step myself. See [`LOG.md`](LOG.md) for the step-by-step record.
+**Why I built this.** I've sold payments, FX and treasury products to founders and finance teams across five Asian markets. I haven't sold billing as a standalone product, so I tested Airwallex Billing myself instead of only reading about it.
 
-## How the pieces fit
+## Key takeaways (read this first)
 
-```mermaid
-sequenceDiagram
-    participant Me as My Mac (Terminal)
-    participant API as Lark Open Platform
-    participant Base as Base "Store issues"
-    participant Group as Group "Store Ops Test"
+1. **A failed renewal can be traced with IDs alone.** Invoice, billing transaction, Payment Intent, payment attempt. No manual matching. I checked this on one paid and one failed charge.
+2. **The layers don't move together.** After the failed charge the attempt was `FAILED` and the subscription was `UNPAID`, but the billing transaction still said `CREATED`. Anyone building on this should read the payment layer's status, not only the billing one.
+3. **Retry behaviour on a daily plan:** Test still running; result added once the retry window has passed.
+4. **Not tested:** webhook delivery, retry schedules for longer cycles, and any approval-rate or recovery-rate uplift. A sandbox can't show those.
 
-    Me->>API: 1. Get tenant access token (valid 2 hours)
-    Me->>API: 2. List chats the bot is in
-    Me->>API: 3. Send message to group
-    API-->>Group: Message from my app's bot
-    Me->>API: 4. Create record
-    API-->>Base: New row
-    Me->>API: 5. Search records (read back)
-    Me->>API: 6. Update record status
-    Group-->>API: Someone @mentions the bot
-    API-->>Me: 7. Event pushed over a persistent connection
-```
+## Problem
+
+Subscription businesses selling across currencies lose recurring revenue to failed renewals, not only to cancellations. Finance teams then struggle to see why a renewal failed, whether it recovered, and which payment settled which invoice. This repo follows one subscription through its billing lifecycle to see how much of that is visible and recoverable in one system.
+
+## Who this is for
+
+A mid-market subscription business in Asia that bills in several currencies, has a finance team but no large engineering team, and has outgrown a basic billing tool without reaching the scale where a heavy enterprise payments setup makes sense.
+
+## Hypothesis
+
+For this kind of business, one platform handling billing, payments and reconciliation should let a failed renewal be traced from invoice to payment attempt to retry to settlement through one ID chain, with no manual matching.
+
+**Assumption I did not test:** that this buyer exists and feels this pain. That needs customer conversations, not a sandbox.
 
 ## What I ran
 
-| # | Step | Call | Command | Result |
-|---|---|---|---|---|
-| 1 | Authenticate | `POST /auth/v3/tenant_access_token/internal` | `./lark_lab.sh check` | ✅ Token OK |
-| 2 | Find the group | `GET /im/v1/chats` | `./lark_lab.sh chats` | ✅ After adding the bot to the group |
-| 3 | Notify the group | `POST /im/v1/messages?receive_id_type=chat_id` | `./lark_lab.sh send "text"` | ✅ Message arrived from the app |
-| 4 | Create a record | `POST /bitable/v1/apps/{app}/tables/{table}/records` | `./lark_lab.sh create "Store" "Issue"` | ✅ Row appeared in the Base |
-| 5 | Read it back | `POST .../records/search` | `./lark_lab.sh search` | ✅ |
-| 6 | Update the status | `PUT .../records/{record_id}` | `./lark_lab.sh update REC_ID "Approved"` | ✅ Status changed |
-| 7 | Receive a push event | event subscription, persistent connection | `lark-cli event +subscribe --event-types im.message.receive_v1` | ✅ Event received |
-| – | No-code Base workflow | Workflow: record added, then send message | built in the Lark Base UI | ⚠️ Built and activated, but the Activity Log showed no runs. Cause not found. |
-
-## What I learned
-
-1. **Everything starts with a token.** Each call needs a tenant access token that expires after 2 hours, so a script fetches a fresh one before it does anything else.
-2. **A bot only sees what it has been added to.** My first `chats` call returned an empty list because the bot wasn't in the group. After adding scopes or events, I also had to publish a new app version before they took effect.
-3. **The IDs matter.** I took the Base token and table ID from the Grid view URL. My first copy came from the Workflow page, so the table ID was wrong.
-4. **Data comes back in a different shape from how it goes in.** I wrote text fields as plain strings, but reading them back returned rich-text lists.
-5. **Blank records are a real edge case.** Clicking "+" in the Base created empty rows, which I could see in the data. A workflow should check required fields are filled before it acts.
-6. **Push is different from pull.** The app, the subscribed event and the bot in the group all had to be the same app. My first listener was on a second app the CLI had created, so it heard nothing until I pointed it at the right one.
-7. **Not everything worked first time.** I isolated each step on its own, and the same flow worked through the API even though the no-code workflow never showed a run.
-
-## Gotchas I hit
-
-- **Blank records.** Clicking "+" in the Base grid created empty rows, read back as `"fields": {}`.
-- **Trailing spaces.** Two values typed in the grid came back with a space at the end (`"Chiller Fault "`); the API-created row had none.
-- **"Is not empty" condition.** The workflow set to fire when Store and Issue are not empty showed no runs. I did not confirm the condition was the cause.
-- **Bulk changes don't fire automations.** Lark's docs say pasting data, bulk updates and batch API calls do not trigger workflows. I used single-record calls.
-
-## Common integration pitfalls, and where I hit them
-
-General pitfalls I would expect with any chat-and-database integration (my own hypotheses, not Lark data). Items marked "hit" happened to me in this lab.
-
-| Pitfall | In this lab |
+| Script | What it does |
 |---|---|
-| App version never published, so nothing changes | **Hit**: scopes and events had no effect until I published a new version |
-| Bot not added to the group or Base | **Hit**: empty chat list until the bot was added |
-| Wrong app or wrong IDs | **Hit**: listener on the wrong app; table ID from the wrong page |
-| No public URL for event delivery | Avoided by using a persistent connection instead of a webhook |
-| Rate limits during busy periods | Not tested. Messaging is documented as 5 per second per user or group |
-| Duplicate events | Not tested. The plan is to de-duplicate by `event_id` |
-| Silent failures nobody notices | **Seen** in the no-code workflow: no run, no error |
+| `01_auth.py` | Gets an access token with a scoped API key |
+| `02_setup.py` | Creates a customer, a product and a monthly USD price |
+| `03_checkout.py`, `03b_check.py` | Starts a subscription through hosted Billing Checkout, then checks the result |
+| `04_force_failure.py` | Adds an 80.51 USD item and charges immediately. The test card declines that exact amount |
+| `04b_inspect.py`, `04c_status.py` | List invoices, billing transactions, Payment Intents and attempts, and check statuses |
+| `04d_webhook_test.py` | Changes a subscription note to trigger an event |
+| `05_daily_checkout.py`, `05b_daily_check.py` | Same setup on a daily plan, so retries show up within hours |
+| `06_fail_and_watch.py`, `06b_watch_only.py` | Forces the failure on the daily plan and polls every 5 minutes, logging every change to `evidence/retry_log.jsonl` |
 
-## Known gaps and next steps
+The price is in USD on a Singapore account, which covers the multi-currency case. Settlement was not tested.
 
-- `lark_lab.sh` does not yet trim whitespace or reject empty values.
-- No retries, idempotency keys (`uuid`) or event de-duplication yet.
-- Find out why the no-code workflow never fired: remove the conditions and add them back one at a time.
+## Findings
 
-## Run it yourself
+**The ID chain**
 
-1. Create a custom app at https://open.larksuite.com/app (international Lark, not Feishu) and add the Bot feature.
-2. Enable scopes: `im:message`, `im:message:send_as_bot`, `im:chat`, and Base read/write. For events, add `im.message.receive_v1` and use a persistent connection.
-3. Publish an app version, add the bot to a test group, and add the app to your Base.
-4. `cp .env.example .env`, fill in the values, then `chmod +x lark_lab.sh`.
+Invoice -> billing transaction (`invoice_id`) -> Payment Intent (`external_id` on the transaction) -> payment attempt.
 
-Requires `curl` and `python3`.
+**One failed charge, layer by layer** (80.51 USD add-on, charged immediately, test card declined)
 
-## Security
+| Layer | Status |
+|---|---|
+| Subscription | UNPAID |
+| Invoice | FINALIZED, payment UNPAID |
+| Billing transaction | CREATED |
+| Payment Intent | REQUIRES_PAYMENT_METHOD |
+| Payment attempt | FAILED (`authorization_failed`) |
 
-- Secrets live only in `.env`, which is git-ignored.
-- Tokens, app secrets, chat IDs, message IDs and record IDs are redacted in `LOG.md`.
+The paid invoice looked like this: invoice PAID, transaction SUCCEEDED, Payment Intent SUCCEEDED.
+
+**Other things I noticed**
+- Subscriptions created through checkout use `AUTO_CHARGE`.
+- The subscription's `latest_invoice_id` lagged the new invoice for a short while.
+- The failure code was generic. The sandbox doesn't show issuer-level detail, so this says nothing about production decline codes.
+
+**Where the docs and the API disagreed**
+- The Checkout docs example includes `payment_method_save`. The API rejects it in SUBSCRIPTION mode.
+- Two docs pages give different retry schedules: one by cycle length, one a fixed set of days.
+- Endpoint paths and sandbox base URLs differ between pages (`api-demo` and `api.sandbox`).
+- Webhook event names depend on the API version.
+
+## Retry and end state (daily plan)
+
+Test still running; result added once the retry window has passed.
+
+## My view
+
+The part I liked most is that one failed renewal can be followed from the invoice all the way to the card attempt using IDs only. I didn't have to match anything by hand. Setup was quick too.
+
+The part that slowed me down was the developer side. A couple of things in the docs didn't match what the API did, and my first API key got rejected until I made an org-level scoped one. I also found it odd that the attempt said failed while the billing transaction still said created. A customer's engineers would trip on the same things.
+
+## Questions I'd ask a customer
+
+1. Roughly what share of renewals fail on the first attempt? (If they don't know, that's a finding in itself.)
+2. When a renewal fails, who finds out, how, and how long does it take to learn why?
+3. Which currencies do you bill in, and which do you settle in?
+4. How does finance match a payment to an invoice today: spreadsheet, export, or a tool?
+5. How many systems touch one renewal, from billing tool to payment provider to the bank?
+6. Who owns this: finance, RevOps or engineering?
+7. What happens to a customer whose renewal fails: access cut, grace period, or a manual chase?
+8. What would a one-point drop in failed renewals be worth over a year?
+
+## What I'd tell a customer
+
+**To a CFO or finance lead**
+
+> When a renewal fails, you need to know three things: that it failed, why, and whether the money came back, and which invoice it belongs to. In a sandbox test I followed a failed charge from the invoice, through the billing transaction and the Payment Intent, to the payment attempt, using IDs the platform generates. No spreadsheet matching. I can't tell you your recovery rate, because that depends on live data, but I can show you where to look and how quickly you'd see it.
+
+**To a CTO or Head of Payments**
+
+> Billing and payments are two layers that share IDs: the invoice links to a billing transaction, whose external ID is the Payment Intent. Statuses don't always move together. In my test the attempt was `FAILED` while the billing transaction still said `CREATED`, so build around the payment layer's status, not only the billing one. Checkout-created subscriptions use auto-charge. Webhooks are documented, but I didn't capture them in my test, so I wouldn't promise event timing without testing it with your setup.
+
+**What I would not say**
+- Any approval-rate or recovery-rate uplift. A sandbox can't show it.
+- Anything about production decline codes.
+
+## What this cannot show
+
+The sandbox uses simulated money. It can't prove approval-rate uplift or real recovery rates. It only shows what is visible and traceable in the product.
+
+## Not covered
+
+- Webhook delivery. I set up an endpoint but did not capture events.
+- Retry schedules for 2 to 6 day and 7+ day cycles. I only tested a daily cycle.
+- Usage-based billing, credit notes, tax and alternative payment methods. Studied, not built.
+
+## Setup
+
+1. Create a sandbox account and an organisation-level scoped API key with Billing write access and Payments read access. Admin keys are rejected.
+2. Copy `.env.example` to `.env` and fill in the client ID and API key. Never commit `.env`.
+3. `python3 -m pip install requests python-dotenv`
+4. Run the scripts in order.
+
+## Status
+
+- [x] 01 authenticate
+- [x] 02 customer, product, price
+- [x] 03 subscription via checkout
+- [x] 04 forced failed charge and ID chain
+- [x] 05 daily-plan retry test
+- [ ] Webhook events captured
+- [ ] One-off invoice
+
+Built by Ploypalin Tan. Sandbox only. Not affiliated with Airwallex.
