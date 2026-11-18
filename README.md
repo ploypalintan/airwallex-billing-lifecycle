@@ -29,6 +29,8 @@ For this kind of business, one platform handling billing, payments and reconcili
 
 ## What I ran
 
+![Hosted checkout page used to create the subscription](docs/checkout-page.png)
+
 | Script | What it does |
 |---|---|
 | `01_auth.py` | Gets an access token with a scoped API key |
